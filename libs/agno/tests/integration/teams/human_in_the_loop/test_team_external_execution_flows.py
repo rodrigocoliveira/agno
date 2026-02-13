@@ -53,66 +53,66 @@ def _make_team(agent, db=None):
     )
 
 
-# def test_member_external_execution_pause(shared_db):
-#     """Team pauses when member agent tool requires external execution."""
-#     agent = _make_agent(db=shared_db)
-#     team = _make_team(agent, db=shared_db)
+def test_member_external_execution_pause(shared_db):
+    """Team pauses when member agent tool requires external execution."""
+    agent = _make_agent(db=shared_db)
+    team = _make_team(agent, db=shared_db)
 
-#     response = team.run(
-#         "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
-#         session_id="test_ext_exec_pause",
-#     )
+    response = team.run(
+        "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
+        session_id="test_ext_exec_pause",
+    )
 
-#     assert response.is_paused
-#     assert len(response.active_requirements) >= 1
+    assert response.is_paused
+    assert len(response.active_requirements) >= 1
 
-#     req = response.active_requirements[0]
-#     assert req.needs_external_execution
-#     assert req.tool_execution is not None
-#     assert req.tool_execution.tool_name == "send_email"
-
-
-# def test_member_external_execution_continue(shared_db):
-#     """Pause -> provide external result -> continue_run completes."""
-#     agent = _make_agent(db=shared_db)
-#     team = _make_team(agent, db=shared_db)
-
-#     response = team.run(
-#         "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
-#         session_id="test_ext_exec_continue",
-#     )
-
-#     assert response.is_paused
-#     req = response.active_requirements[0]
-#     assert req.needs_external_execution
-
-#     req.set_external_execution_result("Email sent successfully to john@example.com")
-
-#     result = team.continue_run(response)
-#     assert not result.is_paused
-#     assert result.content is not None
+    req = response.active_requirements[0]
+    assert req.needs_external_execution
+    assert req.tool_execution is not None
+    assert req.tool_execution.tool_name == "send_email"
 
 
-# @pytest.mark.asyncio
-# async def test_member_external_execution_async(shared_db):
-#     """Async external execution flow."""
-#     agent = _make_agent(db=shared_db)
-#     team = _make_team(agent, db=shared_db)
+def test_member_external_execution_continue(shared_db):
+    """Pause -> provide external result -> continue_run completes."""
+    agent = _make_agent(db=shared_db)
+    team = _make_team(agent, db=shared_db)
 
-#     response = await team.arun(
-#         "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
-#         session_id="test_ext_exec_async",
-#     )
+    response = team.run(
+        "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
+        session_id="test_ext_exec_continue",
+    )
 
-#     assert response.is_paused
-#     req = response.active_requirements[0]
-#     assert req.needs_external_execution
+    assert response.is_paused
+    req = response.active_requirements[0]
+    assert req.needs_external_execution
 
-#     req.set_external_execution_result("Email sent successfully to john@example.com")
+    req.set_external_execution_result("Email sent successfully to john@example.com")
 
-#     result = await team.acontinue_run(response)
-#     assert not result.is_paused
-#     assert result.content is not None
+    result = team.continue_run(response)
+    assert not result.is_paused
+    assert result.content is not None
+
+
+@pytest.mark.asyncio
+async def test_member_external_execution_async(shared_db):
+    """Async external execution flow."""
+    agent = _make_agent(db=shared_db)
+    team = _make_team(agent, db=shared_db)
+
+    response = await team.arun(
+        "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
+        session_id="test_ext_exec_async",
+    )
+
+    assert response.is_paused
+    req = response.active_requirements[0]
+    assert req.needs_external_execution
+
+    req.set_external_execution_result("Email sent successfully to john@example.com")
+
+    result = await team.acontinue_run(response)
+    assert not result.is_paused
+    assert result.content is not None
 
 
 @pytest.mark.asyncio
@@ -182,3 +182,55 @@ def test_member_external_execution_streaming(shared_db):
     )
     assert not result.is_paused
     assert result.content is not None
+
+
+def test_unresolved_external_execution_stays_paused(shared_db):
+    """Calling continue_run without providing external result keeps team paused."""
+    agent = _make_agent(db=shared_db)
+    team = _make_team(agent, db=shared_db)
+
+    response = team.run(
+        "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
+        session_id="test_ext_exec_unresolved",
+    )
+
+    assert response.is_paused
+    # Do NOT set the external execution result
+
+    result = team.continue_run(response)
+    assert result.is_paused
+
+
+def test_member_external_execution_rejection(shared_db):
+    """External execution with empty result still completes the flow.
+
+    Note: External execution requirements don't have a reject() method like
+    confirmations. Instead, the caller can provide an error/failure result.
+    After receiving the result, the model may either:
+    1. Complete with a message acknowledging the failure, OR
+    2. Retry by calling the member agent again (which triggers another pause)
+    """
+    agent = _make_agent(db=shared_db)
+    team = _make_team(agent, db=shared_db)
+
+    response = team.run(
+        "Send an email to john@example.com with subject 'Hello' and body 'Hi there'",
+        session_id="test_ext_exec_rejection",
+    )
+
+    assert response.is_paused
+    req = response.active_requirements[0]
+    assert req.needs_external_execution
+    original_tool_call_id = req.tool_execution.tool_call_id
+
+    req.set_external_execution_result("ERROR: Email service unavailable")
+
+    result = team.continue_run(response)
+    # The original requirement should be resolved
+    assert req.is_resolved()
+    assert result.content is not None
+
+    # If model retried and we paused again, verify it's a NEW tool call
+    if result.is_paused and result.active_requirements:
+        new_req = result.active_requirements[0]
+        assert new_req.tool_execution.tool_call_id != original_tool_call_id

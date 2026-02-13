@@ -3656,6 +3656,16 @@ def continue_run_dispatch(
     if has_member:
         member_reqs = [r for r in (run_response.requirements or []) if getattr(r, "member_agent_id", None) is not None]
         team_level_reqs = [r for r in (run_response.requirements or []) if getattr(r, "member_agent_id", None) is None]
+
+        # Guard: if any member requirements are unresolved, re-pause without routing
+        if any(not req.is_resolved() for req in member_reqs):
+            from agno.team import _hooks
+
+            if opts.stream:
+                return _hooks.handle_team_run_paused_stream(team, run_response=run_response, session=team_session)  # type: ignore
+            else:
+                return _hooks.handle_team_run_paused(team, run_response=run_response, session=team_session)
+
         # Set only member reqs for routing; _route_requirements_to_members
         # may append newly propagated reqs via _propagate_member_pause (chained HITL).
         original_member_req_ids = {id(r) for r in member_reqs}
@@ -3667,7 +3677,7 @@ def continue_run_dispatch(
         newly_propagated = [r for r in (run_response.requirements or []) if id(r) not in original_member_req_ids]
         run_response.requirements = team_level_reqs + newly_propagated
 
-        # Check if any members are still paused
+        # Check if any members are still paused (chained HITL)
         if run_response.requirements and any(not req.is_resolved() for req in run_response.requirements):
             from agno.team import _hooks
 
@@ -4437,6 +4447,15 @@ async def _acontinue_run(
                     team_level_reqs = [
                         r for r in (run_response.requirements or []) if getattr(r, "member_agent_id", None) is None
                     ]
+
+                    # Guard: if any member requirements are unresolved, re-pause without routing
+                    if any(not req.is_resolved() for req in member_reqs):
+                        from agno.team import _hooks
+
+                        return await _hooks.ahandle_team_run_paused(
+                            team, run_response=run_response, session=team_session
+                        )
+
                     original_member_req_ids = {id(r) for r in member_reqs}
                     run_response.requirements = member_reqs
                     member_results = await _aroute_requirements_to_members(
@@ -4448,7 +4467,7 @@ async def _acontinue_run(
                     ]
                     run_response.requirements = team_level_reqs + newly_propagated
 
-                    # Check if still paused
+                    # Check if still paused (chained HITL)
                     if run_response.requirements and any(not req.is_resolved() for req in run_response.requirements):
                         from agno.team import _hooks
 
@@ -4724,6 +4743,19 @@ async def _acontinue_run_stream(
                     team_level_reqs = [
                         r for r in (run_response.requirements or []) if getattr(r, "member_agent_id", None) is None
                     ]
+
+                    # Guard: if any member requirements are unresolved, re-pause without routing
+                    if any(not req.is_resolved() for req in member_reqs):
+                        from agno.team import _hooks
+
+                        async for item in _hooks.ahandle_team_run_paused_stream(
+                            team, run_response=run_response, session=team_session
+                        ):
+                            yield item
+                        if yield_run_output:
+                            yield run_response
+                        return
+
                     original_member_req_ids = {id(r) for r in member_reqs}
                     run_response.requirements = member_reqs
                     member_results = await _aroute_requirements_to_members(
@@ -4735,6 +4767,7 @@ async def _acontinue_run_stream(
                     ]
                     run_response.requirements = team_level_reqs + newly_propagated
 
+                    # Check if still paused (chained HITL)
                     if run_response.requirements and any(not req.is_resolved() for req in run_response.requirements):
                         from agno.team import _hooks
 
