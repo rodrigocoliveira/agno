@@ -541,6 +541,10 @@ class Agent:
 
         self.metadata = metadata
 
+        # Component metadata (set by get_agents during DB loading)
+        self._version: Optional[int] = None
+        self._stage: Optional[str] = None
+
         from agno.utils.callables import is_callable_factory
 
         if tools is None:
@@ -1648,6 +1652,8 @@ def get_agents(
 ) -> List["Agent"]:
     """
     Get all agents from the database.
+
+    Sets _version and _stage on each agent from the component metadata.
     """
     from agno.utils.log import log_error
 
@@ -1663,9 +1669,9 @@ def get_agents(
                     if "id" not in agent_config:
                         agent_config["id"] = component_id
                     agent = Agent.from_dict(agent_config, registry=registry)
-                    # Ensure agent.id is set to the component_id (the id used to load the agent)
-                    # This ensures events use the correct agent_id
                     agent.id = component_id
+                    agent._version = component.get("current_version")
+                    agent._stage = config.get("stage")
                     agents.append(agent)
         return agents
 
