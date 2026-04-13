@@ -9,8 +9,6 @@ conversations to reconstruct images from external storage.
 from typing import Any, AsyncIterator, Iterator
 from unittest.mock import MagicMock, Mock
 
-import pytest
-
 from agno.agent.agent import Agent
 from agno.media import Audio, File, Image, Video
 from agno.media_storage.reference import MediaReference
