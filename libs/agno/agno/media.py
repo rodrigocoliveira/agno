@@ -469,7 +469,9 @@ class File(BaseModel):
         if isinstance(data, dict) and not any(
             data.get(field) for field in ["id", "url", "filepath", "content", "external", "media_reference"]
         ):
-            raise ValueError("At least one of id, url, filepath, content, external, or media_reference must be provided")
+            raise ValueError(
+                "At least one of id, url, filepath, content, external, or media_reference must be provided"
+            )
         return data
 
     @field_validator("mime_type")
