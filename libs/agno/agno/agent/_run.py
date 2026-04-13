@@ -4453,7 +4453,9 @@ def save_run_response_to_file(
 def scrub_run_output_for_storage(agent: Agent, run_response: RunOutput) -> None:
     """Scrub run output based on storage flags before persisting to database."""
     if not agent.store_media:
-        scrub_media_from_run_output(run_response)
+        # If media_storage is configured, offload already ran — preserve MediaReferences
+        # (tiny metadata pointers needed to reconstruct media in future turns)
+        scrub_media_from_run_output(run_response, keep_references=agent.media_storage is not None)
 
     if not agent.store_tool_messages:
         scrub_tool_results_from_run_output(run_response)
@@ -4475,7 +4477,7 @@ def cleanup_and_store(
     from agno.run.approval import update_approval_run_status
 
     # Offload media to external storage before scrubbing
-    if agent.media_storage is not None and agent.store_media:
+    if agent.media_storage is not None:
         from agno.media_storage.base import AsyncMediaStorage
 
         if isinstance(agent.media_storage, AsyncMediaStorage):
@@ -4547,7 +4549,7 @@ async def acleanup_and_store(
     from agno.run.approval import aupdate_approval_run_status
 
     # Offload media to external storage before scrubbing
-    if agent.media_storage is not None and agent.store_media:
+    if agent.media_storage is not None:
         from agno.media_storage.base import AsyncMediaStorage, MediaStorage
 
         if not isinstance(agent.media_storage, AsyncMediaStorage):

@@ -466,52 +466,83 @@ def validate_media_object_id(
     return image_list, video_list, audio_list, file_list
 
 
-def scrub_media_from_run_output(run_response: Union[RunOutput, TeamRunOutput]) -> None:
+def scrub_media_from_run_output(run_response: Union[RunOutput, TeamRunOutput], keep_references: bool = False) -> None:
     """
-    Completely remove all media from RunOutput when store_media=False.
-    This includes media in input, output artifacts, and all messages.
+    Remove media from RunOutput when store_media=False.
+
+    If keep_references=True (media_storage configured), preserve media that was
+    successfully offloaded (has media_reference) — only scrub raw-content media.
+    The MediaReference is a tiny metadata pointer (~200 bytes) needed to
+    reconstruct media in future turns via URL refresh.
     """
     # 1. Scrub RunInput media
     if run_response.input is not None:
-        run_response.input.images = []
-        run_response.input.videos = []
-        run_response.input.audios = []
-        run_response.input.files = []
+        if keep_references:
+            run_response.input.images = [
+                img for img in (run_response.input.images or []) if img.media_reference is not None
+            ]
+            run_response.input.videos = [v for v in (run_response.input.videos or []) if v.media_reference is not None]
+            run_response.input.audios = [a for a in (run_response.input.audios or []) if a.media_reference is not None]
+            run_response.input.files = [f for f in (run_response.input.files or []) if f.media_reference is not None]
+        else:
+            run_response.input.images = []
+            run_response.input.videos = []
+            run_response.input.audios = []
+            run_response.input.files = []
 
-    # 3. Scrub media from all messages
+    # 2. Scrub media from all messages
     if run_response.messages:
         for message in run_response.messages:
-            scrub_media_from_message(message)
+            scrub_media_from_message(message, keep_references=keep_references)
 
-    # 4. Scrub media from additional_input messages if any
+    # 3. Scrub media from additional_input messages if any
     if run_response.additional_input:
         for message in run_response.additional_input:
-            scrub_media_from_message(message)
+            scrub_media_from_message(message, keep_references=keep_references)
 
-    # 5. Scrub media from reasoning_messages if any
+    # 4. Scrub media from reasoning_messages if any
     if run_response.reasoning_messages:
         for message in run_response.reasoning_messages:
-            scrub_media_from_message(message)
+            scrub_media_from_message(message, keep_references=keep_references)
 
-    # 6. Null top-level output media fields
-    run_response.images = None
-    run_response.videos = None
-    run_response.audio = None
-    run_response.files = None
+    # 5. Null top-level output media fields
+    if keep_references:
+        run_response.images = [img for img in (run_response.images or []) if img.media_reference is not None] or None
+        run_response.videos = [v for v in (run_response.videos or []) if v.media_reference is not None] or None
+        run_response.audio = [a for a in (run_response.audio or []) if a.media_reference is not None] or None
+        run_response.files = [f for f in (run_response.files or []) if f.media_reference is not None] or None
+    else:
+        run_response.images = None
+        run_response.videos = None
+        run_response.audio = None
+        run_response.files = None
 
 
-def scrub_media_from_message(message: Message) -> None:
-    """Remove all media from a Message object."""
-    # Input media
-    message.images = None
-    message.videos = None
-    message.audio = None
-    message.files = None
-
-    # Output media
-    message.audio_output = None
-    message.image_output = None
-    message.video_output = None
+def scrub_media_from_message(message: Message, keep_references: bool = False) -> None:
+    """Remove media from a Message. If keep_references=True, preserve offloaded media."""
+    if keep_references:
+        # Only remove media that was NOT offloaded (no media_reference)
+        message.images = [img for img in (message.images or []) if img.media_reference is not None] or None
+        message.videos = [v for v in (message.videos or []) if v.media_reference is not None] or None
+        message.audio = [a for a in (message.audio or []) if a.media_reference is not None] or None
+        message.files = [f for f in (message.files or []) if f.media_reference is not None] or None
+        # Output media: keep only if offloaded
+        if message.audio_output and not getattr(message.audio_output, "media_reference", None):
+            message.audio_output = None
+        if message.image_output and not getattr(message.image_output, "media_reference", None):
+            message.image_output = None
+        if message.video_output and not getattr(message.video_output, "media_reference", None):
+            message.video_output = None
+    else:
+        # Input media
+        message.images = None
+        message.videos = None
+        message.audio = None
+        message.files = None
+        # Output media
+        message.audio_output = None
+        message.image_output = None
+        message.video_output = None
 
 
 def scrub_tool_results_from_run_output(run_response: Union[RunOutput, TeamRunOutput]) -> None:

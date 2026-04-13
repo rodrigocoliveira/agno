@@ -3976,7 +3976,7 @@ def _cleanup_and_store(
     from agno.team._session import update_session_metrics
 
     # Offload media to external storage before scrubbing
-    if team.media_storage is not None and team.store_media:
+    if team.media_storage is not None:
         from agno.media_storage.base import AsyncMediaStorage
 
         if isinstance(team.media_storage, AsyncMediaStorage):
@@ -4036,7 +4036,7 @@ async def _acleanup_and_store(
     from agno.team._session import update_session_metrics
 
     # Offload media to external storage before scrubbing
-    if team.media_storage is not None and team.store_media:
+    if team.media_storage is not None:
         from agno.media_storage.base import AsyncMediaStorage, MediaStorage
 
         if not isinstance(team.media_storage, AsyncMediaStorage):
@@ -4108,7 +4108,9 @@ def scrub_run_output_for_storage(team: "Team", run_response: TeamRunOutput) -> b
     scrubbed = False
 
     if not team.store_media:
-        scrub_media_from_run_output(run_response)
+        # If media_storage is configured, offload already ran — preserve MediaReferences
+        # (tiny metadata pointers needed to reconstruct media in future turns)
+        scrub_media_from_run_output(run_response, keep_references=team.media_storage is not None)
         scrubbed = True
 
     if not team.store_tool_messages:
