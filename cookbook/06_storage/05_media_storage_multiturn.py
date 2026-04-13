@@ -98,7 +98,7 @@ print("=" * 70)
 # Check 1: History messages in turn 2 should contain image data
 history_images_found = 0
 history_images_with_content = 0
-for msg in (response2.messages or []):
+for msg in response2.messages or []:
     if msg.from_history and msg.images:
         for img in msg.images:
             history_images_found += 1
@@ -107,13 +107,17 @@ for msg in (response2.messages or []):
             has_ref = img.media_reference is not None
             if has_content or has_url:
                 history_images_with_content += 1
-            print(f"  History image: id={img.id}, "
-                  f"has_content={has_content}, "
-                  f"has_url={has_url}, "
-                  f"has_media_reference={has_ref}")
+            print(
+                f"  History image: id={img.id}, "
+                f"has_content={has_content}, "
+                f"has_url={has_url}, "
+                f"has_media_reference={has_ref}"
+            )
 
 print(f"\n  History images found in turn 2 messages: {history_images_found}")
-print(f"  History images with content/url (sent to model): {history_images_with_content}")
+print(
+    f"  History images with content/url (sent to model): {history_images_with_content}"
+)
 
 # Check 2: Media files exist on disk
 media_files = list(Path(MEDIA_DIR).glob("*"))
@@ -144,15 +148,34 @@ elif history_images_found > 0:
     print(" PARTIAL: Image reference found but no content/url to send to model")
 else:
     # Fallback: check model response text
-    keywords = ["landscape", "nature", "green", "mountain", "tree",
-                "forest", "hill", "road", "scenic", "waterfall", "rock", "stream"]
+    keywords = [
+        "landscape",
+        "nature",
+        "green",
+        "mountain",
+        "tree",
+        "forest",
+        "hill",
+        "road",
+        "scenic",
+        "waterfall",
+        "rock",
+        "stream",
+    ]
     content_lower = (response2.content or "").lower()
     remembered = any(kw in content_lower for kw in keywords)
     if remembered:
         print(" PASS (text-based): Turn 2 response references the image content")
     else:
-        cant_see = any(phrase in content_lower for phrase in
-                       ["can't see", "cannot see", "don't have access", "don't have the image"])
+        cant_see = any(
+            phrase in content_lower
+            for phrase in [
+                "can't see",
+                "cannot see",
+                "don't have access",
+                "don't have the image",
+            ]
+        )
         if cant_see:
             print(" FAIL: Turn 2 lost the image (model says it can't see images)")
         else:
