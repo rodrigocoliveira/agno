@@ -75,4 +75,7 @@ python cookbook/90_models/deepseek/thinking_mode.py
 
 # Retry behavior
 python cookbook/90_models/deepseek/retry.py
+
+# PDF input (uploaded through the DeepSeek Files API)
+python cookbook/90_models/deepseek/pdf_input.py
 ```

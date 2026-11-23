@@ -52,6 +52,16 @@ Tested against the DeepSeek V4 API (`DEEPSEEK_API_KEY` set) on 2026-05-29.
 
 ---
 
+### pdf_input.py
+
+**Status:** PASS
+
+**Description:** Tested on 2026-11-23. Sends `ThaiRecipes.pdf` (`File(url=...)`) to `deepseek-v4-flash`, sync and async + streaming. The model uploads the PDF through the Files API (purpose `text_recognition`) and references it with a flat `{"type": "file", "file_id": ...}` part.
+
+**Result:** Both runs answered from the PDF content (suggested Tom Kha Gai with its ingredients; listed garlic, fish sauce, coconut milk). Before the fix the same request failed with `400 file must have a file_id or file_data`.
+
+---
+
 ### Notes
 
 - `tool_use.py`, `structured_output.py`, `reasoning_agent.py`, `thinking_tool_calls.py`

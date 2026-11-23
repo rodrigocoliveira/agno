@@ -1,12 +1,33 @@
+import base64
+import mimetypes
 from dataclasses import dataclass, field
 from os import getenv
-from typing import Any, ClassVar, Dict, Optional, Set
+from pathlib import Path
+from typing import Any, AsyncIterator, ClassVar, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
 
-from agno.exceptions import ModelAuthenticationError
+from agno.exceptions import ModelAuthenticationError, ModelProviderError
+from agno.media import File
 from agno.models.message import Message
 from agno.models.openai.like import OpenAILike
-from agno.utils.log import log_warning
-from agno.utils.openai import _format_file_for_message, audio_to_message, images_to_message
+from agno.models.response import ModelResponse
+from agno.utils.log import log_error, log_warning
+from agno.utils.openai import audio_to_message, images_to_message
+
+# DeepSeek file ids look like "file-api-...". agno File ids are auto-generated UUIDs, so this
+# prefix is what marks a File as already uploaded to DeepSeek.
+DEEPSEEK_FILE_ID_PREFIX = "file-api-"
+
+# Documents DeepSeek only reads after parsing them on upload (purpose "text_recognition" or
+# "rich_layout_recognition"). Other non-image files (txt, md, csv, json, xlsx...) use "user_data".
+# See https://api-docs.deepseek.com/guides/files_api
+DEEPSEEK_PARSED_DOCUMENT_MIME_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
 
 
 @dataclass
@@ -41,6 +62,15 @@ class DeepSeek(OpenAILike):
         api_key (Optional[str]): The API key.
         base_url (str): The base URL. Defaults to "https://api.deepseek.com".
         use_thinking (Optional[bool]): Toggle thinking mode. None uses the model default.
+        document_upload_purpose (str): Files API purpose used for PDF and Office documents.
+            "text_recognition" (default) extracts text only; "rich_layout_recognition" also keeps figures.
+
+    File input follows DeepSeek's format, not OpenAI's: images are sent inline as a flat
+    ``{"type": "file", "file_data": ...}`` part, and every other file is uploaded through the
+    Files API and referenced as ``{"type": "file", "file_id": ...}``. The DeepSeek file id is
+    written back to ``File.id`` so a file replayed from history is not uploaded again; a File
+    created with an existing ``file-api-...`` id is sent as is.
+    See: https://api-docs.deepseek.com/guides/document_parsing/
     """
 
     id: str = "deepseek-v4-flash"
@@ -53,6 +83,9 @@ class DeepSeek(OpenAILike):
     # Toggle thinking mode. None = use the model default (on for thinking-capable models,
     # off for the legacy non-thinking ids). True = force on, False = force off.
     use_thinking: Optional[bool] = None
+
+    # Files API purpose for PDF and Office documents: "text_recognition" or "rich_layout_recognition".
+    document_upload_purpose: str = "text_recognition"
 
     # DeepSeek supports JSON mode (response_format={"type": "json_object"}) but not
     # native/json_schema structured outputs, so output_schema needs use_json_mode=True.
@@ -138,6 +171,107 @@ class DeepSeek(OpenAILike):
             client_params.update(self.client_params)
         return client_params
 
+    @staticmethod
+    def _file_name_and_mime(file: File) -> Tuple[str, Optional[str]]:
+        """Derive the upload filename and mime type of a File."""
+        filename = file.filename
+        if not filename and file.filepath is not None:
+            filename = Path(str(file.filepath)).name
+        if not filename and file.url is not None:
+            filename = Path(urlparse(file.url).path).name
+        filename = filename or "file"
+        mime_type = file.mime_type or mimetypes.guess_type(filename)[0]
+        # DeepSeek detects the document type from the filename, so give extension-less names one.
+        if mime_type and not Path(filename).suffix:
+            filename += mimetypes.guess_extension(mime_type) or ""
+        return filename, mime_type
+
+    def _upload_kwargs(self, filename: str, data: bytes, mime_type: Optional[str]) -> Dict[str, Any]:
+        """Build the Files API arguments, picking the purpose DeepSeek expects for the file type."""
+        if mime_type is None or mime_type in DEEPSEEK_PARSED_DOCUMENT_MIME_TYPES:
+            purpose = self.document_upload_purpose
+        else:
+            purpose = "user_data"
+        file_tuple = (filename, data, mime_type) if mime_type else (filename, data)
+        return {"file": file_tuple, "purpose": purpose}
+
+    def _upload_error(self, filename: str, error: Exception) -> ModelProviderError:
+        return ModelProviderError(
+            message=f"Failed to upload file '{filename}' to DeepSeek: {error}",
+            model_name=self.name,
+            model_id=self.id,
+        )
+
+    def _format_file(self, file: File) -> Optional[Dict[str, Any]]:
+        """Build a DeepSeek file part, uploading the file first when it is not an image.
+
+        DeepSeek's file part is flat ({"type": "file", "file_id": ...}), not OpenAI's nested
+        {"type": "file", "file": {...}}. Inline file_data only accepts images; documents must
+        be uploaded through the Files API and referenced by file_id.
+        """
+        if file.id and file.id.startswith(DEEPSEEK_FILE_ID_PREFIX):
+            return {"type": "file", "file_id": file.id}
+
+        filename, mime_type = self._file_name_and_mime(file)
+        try:
+            data = file.get_content_bytes()
+        except Exception as e:
+            log_error(f"Failed to read file '{filename}': {e}")
+            return None
+        if not data:
+            log_error(f"No content to send for file '{filename}'.")
+            return None
+
+        if mime_type and mime_type.startswith("image/"):
+            encoded = base64.b64encode(data).decode("utf-8")
+            return {"type": "file", "file_data": f"data:{mime_type};base64,{encoded}", "filename": filename}
+
+        try:
+            result = self.get_client().files.create(**self._upload_kwargs(filename, data, mime_type))
+        except Exception as e:
+            raise self._upload_error(filename, e) from e
+        file.id = result.id
+        return {"type": "file", "file_id": result.id}
+
+    async def _aupload_files(self, messages: List[Message]) -> None:
+        """Upload pending non-image files with the async client before the request is built.
+
+        Message formatting is synchronous, so without this the async path would block the event
+        loop on each upload. Uploaded files get their DeepSeek id, which _format_file then sends as is.
+        """
+        for message in messages:
+            for file in message.files or []:
+                if file.id and file.id.startswith(DEEPSEEK_FILE_ID_PREFIX):
+                    continue
+                filename, mime_type = self._file_name_and_mime(file)
+                if mime_type and mime_type.startswith("image/"):
+                    continue
+                try:
+                    data = await file.aget_content_bytes()
+                except Exception:
+                    data = None
+                if not data:
+                    # Left to _format_file, which logs and skips unreadable files.
+                    continue
+                try:
+                    result = await self.get_async_client().files.create(
+                        **self._upload_kwargs(filename, data, mime_type)
+                    )
+                except Exception as e:
+                    raise self._upload_error(filename, e) from e
+                file.id = result.id
+
+    async def ainvoke(self, messages: List[Message], *args: Any, **kwargs: Any) -> ModelResponse:
+        await self._aupload_files(messages)
+        return await super().ainvoke(messages, *args, **kwargs)
+
+    async def ainvoke_stream(  # type: ignore[override]
+        self, messages: List[Message], *args: Any, **kwargs: Any
+    ) -> AsyncIterator[ModelResponse]:
+        await self._aupload_files(messages)
+        async for response in super().ainvoke_stream(messages, *args, **kwargs):
+            yield response
+
     def _format_message(self, message: Message, compress_tool_results: bool = False) -> Dict[str, Any]:
         """
         Format a message into the format expected by OpenAI.
@@ -193,7 +327,7 @@ class DeepSeek(OpenAILike):
                 message_dict["content"] = []
             # Insert each file part before text parts
             for file in message.files:
-                file_part = _format_file_for_message(file)
+                file_part = self._format_file(file)
                 if file_part:
                     message_dict["content"].insert(0, file_part)
 
